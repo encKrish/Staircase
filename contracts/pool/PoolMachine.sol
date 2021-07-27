@@ -10,22 +10,30 @@ import {Simple777Recipient} from "./Simple777Recipient.sol";
 import {Ballot} from "../DAO/Ballot.sol";
 
 contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {   
+    event NewAccountBlacklisted(address defaulter);
     // InFlow Streams should always be stablecoin based for 2 reasons:
     // 1. It makes sending poolTokens magnitudes easier.
     // 2. It is microfinance, you shouldn't have high volatile coins here. 
 
+    // TODO check for due loans, if not paid, revoke membership and blacklist
+    
     ISuperfluid private host;   
     IConstantFlowAgreementV1 private cfa;
     ISuperToken private acceptedToken;
     int96 public acceptedRate;
     ISuperToken private poolToken;
+    uint16 public renounceFee = 400; // Arbitrary value set (_ _ _ _ _ => _ _ _._ _ %)
+    uint16 public interestRate;
+    uint public loanDuration;
 
     constructor(
         ISuperfluid _host,
         IConstantFlowAgreementV1 _cfa,
         ISuperToken _acceptedToken,
         int96 _acceptedRate,
-        ISuperToken _poolToken
+        ISuperToken _poolToken,
+        uint _loanDuration,
+        uint16 _interestRate
     ) Simple777Recipient(address(poolToken)) {
         assert(address(_host) != address(0));
         assert(address(_cfa) != address(0));
@@ -38,6 +46,8 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
         acceptedToken = _acceptedToken;
         acceptedRate = _acceptedRate;
         poolToken = _poolToken;
+        loanDuration = _loanDuration;
+        interestRate = _interestRate;
 
         uint256 configWord = SuperAppDefinitions.APP_LEVEL_FINAL |
             SuperAppDefinitions.BEFORE_AGREEMENT_CREATED_NOOP |
@@ -45,6 +55,44 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
             SuperAppDefinitions.BEFORE_AGREEMENT_TERMINATED_NOOP;
             
         host.registerApp(configWord);
+    }
+
+    function repayLoan(uint proposalId) public onlyVoter ofPropType(proposalId, 1) {
+        FundsAlloted storage fundDescr = proposalIdToFunds[proposalId];
+        uint allotTime = block.time - fundDescr.blockTime;
+        uint amount = fundDescr.amount - fundDescr.amountRecievedBack;
+        uint amountToPay;
+        {
+            uint interest += (allotTime * interestRate) / ((365 Days ) * 10000) * amount;
+            amountToPay = amount + interest;
+        }
+        acceptedToken.send(address(this), amountToPay, "");
+
+        fundDescr.amountRecievedBack += amount;
+        fundDescr.paidBack = true;
+
+        emit LoanRepaid(proposalId);
+    }
+
+    function repayPartialLoan(uint proposalId, uint amountToPay) public onlyVoter ofPropType(proposalId, 1) {
+        FundsAlloted storage fundDescr = proposalIdToFunds[proposalId];
+        uint allotTime = block.time - fundDescr.blockTime;
+        
+        // TODO check this!!!
+        uint amount = (amountToPay * (365 Days) * 10000) / ((10000 * (365 Days)) + (interestRate * interestRate))
+
+        acceptedToken.send(address(this), amountToPay, "");
+
+        fundDescr.amountRecievedBack += amount;
+    }
+
+    function renounceOwnership() public onlyVoter {
+        uint senderBalance = poolToken.balanceOf(msg.sender);
+        poolToken.send(address(this), senderBalance, "");
+
+        uint amountToSend = (senderBalance * (10000 - renounceFee)) / 10000;
+        require(getPoolBalance() > amountToSend, "Pool's balance is not enough currently");
+        acceptedToken.send(msg.sender, amountToSend, "");
     }
 
     function _updateOutflow(
