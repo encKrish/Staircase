@@ -59,11 +59,11 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
 
     function repayLoan(uint proposalId) public onlyVoter ofPropType(proposalId, 1) {
         FundsAlloted storage fundDescr = proposalIdToFunds[proposalId];
-        uint allotTime = block.time - fundDescr.blockTime;
+        uint allotTime = block.timestamp - fundDescr.blockTime;
         uint amount = fundDescr.amount - fundDescr.amountRecievedBack;
         uint amountToPay;
         {
-            uint interest += (allotTime * interestRate) / ((365 Days ) * 10000) * amount;
+            uint interest = (allotTime * interestRate) / ((365 days ) * 10000) * amount;
             amountToPay = amount + interest;
         }
         acceptedToken.send(address(this), amountToPay, "");
@@ -71,15 +71,15 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
         fundDescr.amountRecievedBack += amount;
         fundDescr.paidBack = true;
 
-        emit LoanRepaid(proposalId);
+        emit LoanRepaid(proposalId, fundDescr.beneficiary);
     }
 
     function repayPartialLoan(uint proposalId, uint amountToPay) public onlyVoter ofPropType(proposalId, 1) {
         FundsAlloted storage fundDescr = proposalIdToFunds[proposalId];
-        uint allotTime = block.time - fundDescr.blockTime;
+        uint allotTime = block.timestamp - fundDescr.blockTime;
         
         // TODO check this!!!
-        uint amount = (amountToPay * (365 Days) * 10000) / ((10000 * (365 Days)) + (interestRate * interestRate))
+        uint amount = (amountToPay * (365 days) * 10000) / ((10000 * (365 days)) + (interestRate * interestRate));
 
         acceptedToken.send(address(this), amountToPay, "");
 
