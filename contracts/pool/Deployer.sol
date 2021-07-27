@@ -25,6 +25,7 @@ contract Deployer {
         ISuperfluid _host,
         IConstantFlowAgreementV1 _cfa,
         ISuperToken _acceptedToken,
+        int96 _acceptedRate,
         ISuperTokenFactory _superTokenFactory,
         string memory token_name,
         string memory token_symbol,
@@ -36,12 +37,12 @@ contract Deployer {
         superTokenFactory = _superTokenFactory;
         total_supply = total_supply * (10**18);
 
-        step1_deploy();
+        step1_deploy(_acceptedRate);
         step2_initProxy();
         step3_initToken(token_name, token_symbol, total_supply);
     }
 
-    function step1_deploy() internal {
+    function step1_deploy(int96 _acceptedRate) internal {
         // Deploy the Custom Super Token proxy
         poolToken = INativeSuperToken(address(new NativeSuperTokenProxy()));
         emit NewContract(address(poolToken));
@@ -52,6 +53,7 @@ contract Deployer {
                 host,
                 cfa,
                 acceptedToken,
+                _acceptedRate,
                 ISuperToken(address(poolToken))
             )
         );

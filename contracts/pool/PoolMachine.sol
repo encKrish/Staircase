@@ -7,34 +7,32 @@ import {IConstantFlowAgreementV1} from "@superfluid-finance/ethereum-contracts/c
 import {SuperAppBase} from "@superfluid-finance/ethereum-contracts/contracts/apps/SuperAppBase.sol";
 
 import {Simple777Recipient} from "./Simple777Recipient.sol";
+import {Ballot} from "../DAO/Ballot.sol";
 
-contract PoolMachine is Simple777Recipient, SuperAppBase {    
-    ISuperfluid private host;
+contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {   
+    // InFlow Streams should always be stablecoin based for 2 reasons:
+    // 1. It makes sending poolTokens magnitudes easier.
+    // 2. It is microfinance, you shouldn't have high volatile coins here. 
+
+    ISuperfluid private host;   
     IConstantFlowAgreementV1 private cfa;
     ISuperToken private acceptedToken;
-    address private reciever;
+    int96 public acceptedRate;
     ISuperToken private poolToken;
-
-    address creator;
-    mapping(address => bool) allMembers;
-    mapping(address => bool) activeMembers;
-    uint public acceptedRate;
-    
-    mapping(address => uint) donorsToAmount; // use chainlink to calculate amount in dollars
 
     constructor(
         ISuperfluid _host,
         IConstantFlowAgreementV1 _cfa,
         ISuperToken _acceptedToken,
-        uint _acceptedRate,
-        ISuperToken _poolToken,
+        int96 _acceptedRate,
+        ISuperToken _poolToken
     ) Simple777Recipient(address(poolToken)) {
         assert(address(_host) != address(0));
         assert(address(_cfa) != address(0));
         assert(address(_acceptedToken) != address(0));
         assert(_acceptedRate != 0);
         assert(address(_poolToken) != address(0));
-
+        
         host = _host;
         cfa = _cfa;
         acceptedToken = _acceptedToken;
@@ -47,7 +45,6 @@ contract PoolMachine is Simple777Recipient, SuperAppBase {
             SuperAppDefinitions.BEFORE_AGREEMENT_TERMINATED_NOOP;
             
         host.registerApp(configWord);
-        creator = tx.origin;
     }
 
     function _updateOutflow(
@@ -56,20 +53,22 @@ contract PoolMachine is Simple777Recipient, SuperAppBase {
         bytes32 agreementId
     ) private returns (bytes memory newCtx) {
         newCtx = ctx;
+
+        // If we "stream out" acceptedToken, we will get a -ve inFlowRate (outflowRate)
         (, int96 inFlowRate, , ) = cfa.getFlowByID(
             acceptedToken,
             agreementId
         );
+        
         (, int96 outFlowRate, , ) = cfa.getFlow(
             poolToken,
             address(this),
             donor
         );
         
-        if (inFlowRate < 0) inFlowRate = -inFlowRate; // Fixes issue when inFlowRate is negative
-
-        if (allMembers[donor]) {
+        if (voters[donor].isVoter) {
             if  (inFlowRate != acceptedRate) {
+                // inFlowRate is not equal to acceptedRate, delete inFlow, zero outFlow
                 (newCtx, ) = host.callAgreementWithContext(
                     cfa,
                     abi.encodeWithSelector(
@@ -82,9 +81,26 @@ contract PoolMachine is Simple777Recipient, SuperAppBase {
                     "0x",
                     newCtx
                 );
-                activeMembers[donor] = false;
+                voters[donor].isVoter = false;
+
+                // The donor already recieves an outflow (flow is updated)
+                if (outFlowRate > 0) {
+                    (newCtx, ) = host.callAgreementWithContext(
+                        cfa,
+                        abi.encodeWithSelector(
+                            cfa.deleteFlow.selector,
+                            poolToken,
+                            address(this),
+                            donor,
+                            new bytes(0) // placeholder
+                        ),
+                        "0x",
+                        newCtx
+                    );
+                }
             }
             else {
+                // If inFlowRate is equal to acceptedRate
                 (newCtx, ) = host.callAgreementWithContext(
                     cfa,
                     abi.encodeWithSelector(
@@ -97,12 +113,58 @@ contract PoolMachine is Simple777Recipient, SuperAppBase {
                     "0x",
                     newCtx
                 );
-                activeMembers[donor] = true;
+                voters[donor].isVoter = true;
             }
         }
-        // else {
-        //     // add logic for non-member 
-        // }
+    }
+
+    function _stopAllFlow(
+        bytes calldata ctx,
+        address donor,
+        bytes32 agreementId
+    ) private returns (bytes memory newCtx) {
+        (, int96 inFlowRate, , ) = cfa.getFlowByID(
+            acceptedToken,
+            agreementId
+        );
+        
+        (, int96 outFlowRate, , ) = cfa.getFlow(
+            poolToken,
+            address(this),
+            donor
+        );
+
+        newCtx = ctx;
+        if(inFlowRate > 0) {
+            (newCtx, ) = host.callAgreementWithContext(
+                    cfa,
+                    abi.encodeWithSelector(
+                        cfa.deleteFlow.selector,
+                        acceptedToken,
+                        donor,
+                        address(this),
+                        new bytes(0) // placeholder
+                    ),
+                    "0x",
+                    newCtx
+                );
+        }
+        if(outFlowRate > 0) {
+            (newCtx, ) = host.callAgreementWithContext(
+                    cfa,
+                    abi.encodeWithSelector(
+                        cfa.deleteFlow.selector,
+                        poolToken,
+                        address(this),
+                        donor,
+                        new bytes(0) // placeholder
+                    ),
+                    "0x",
+                    newCtx
+                );
+        }
+
+        return newCtx;
     }
 
     /**************************************************************************
@@ -156,14 +218,22 @@ contract PoolMachine is Simple777Recipient, SuperAppBase {
         if (!_isSameToken(_superToken) || !_isCFAv1(_agreementClass))
             return _ctx;
         (address donor, ) = abi.decode(_agreementData, (address, address));
-        return _updateOutflow(_ctx, donor, _agreementId);
+        
+        // return _updateOutflow(_ctx, donor, _agreementId);
+        return _stopAllFlow(_ctx, donor, _agreementId);
     }
 
-    function getNetFlow() public view returns (int96) {
+    function getNetInFlow() public view returns (int96) {
         return cfa.getNetFlow(acceptedToken, address(this));
     }
 
-    function getBalance() public view returns(uint) {return 0;}
+    function getPoolBalance() public view returns(uint) {
+        return acceptedToken.balanceOf(address(this));
+    }
+
+    function getPoolTokenBalance() public view returns(uint) {
+        return poolToken.balanceOf(address(this));
+    }
 
     function _isSameToken(ISuperToken superToken) private view returns (bool) {
         return address(superToken) == address(acceptedToken);
@@ -176,6 +246,9 @@ contract PoolMachine is Simple777Recipient, SuperAppBase {
                 "org.superfluid-finance.agreements.ConstantFlowAgreement.v1"
             );
     }
+
+    // DEBUG: Create a function to mint super token to some address
+    // Will be used to send the tokens back to the app and test functions
 
     modifier onlyHost() {
         require(
