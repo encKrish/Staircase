@@ -8,8 +8,14 @@ pragma solidity >=0.7.0 <0.9.0;
 contract Ballot {
     event NewVoterRequest(uint proposalId, address beneficiary);
     event NewVoterApproved(uint proposalId, address beneficiary);
+    event VoterRightRevoked(address voter);
     event FundTransferRequest(uint proposalId, address beneficiary, uint amount);
     event FundTransferApproved(uint proposalId, address beneficiary, uint amount, uint blockTime);
+    event RepayExtensionRequest(uint proposalId);
+    event RepayExtensionApproved(uint proposalId, uint blockTime);
+    event LoanWaiverRequest(uint proposalId);
+    event LoanWaiverApproved(uint proposalId);
+    event LoanRepaid(uint proposalId, address payer);
 
     struct VoterProposalInfo {
         bool interacted; // if the voter has interacted with a proposal
@@ -24,6 +30,13 @@ contract Ballot {
     }
 
     struct Proposal {
+        // Types:
+        // 0: New Member
+        // 1: Fund Transfer
+        // 2: Repay Extension
+        // 3: Loan Waiver
+        uint8 propType; 
+        uint priorProposalId; // id of prior proposal for repay and waiver
         bytes ipfsHash;   // IPFS hash of the application
         uint amount; // For fund borrowing proposal
         address beneficiary; // Address to be member or to take funds 
@@ -32,10 +45,10 @@ contract Ballot {
     }
 
     struct FundsAlloted {
-        address beneficiary;
-        uint amount;
-        uint blockTime;
-        bool fundsSent;
+        address beneficiary;    // The benefitting address
+        uint amount;    // Amount of loan
+        uint amountRecievedBack; // Amount the beneficiary has repaid
+        uint blockTime; // Time when the funds were sent
         bool paidBack; // If amount has been paid back
     }
 
@@ -61,7 +74,7 @@ contract Ballot {
      */
     function addVoterProposal(bytes memory applicationHash) public returns(uint) {
         require(voters[msg.sender].isVoter != true, "msg.sender is already a voter");
-        Proposal memory prop = Proposal(applicationHash, 0, msg.sender, 0, false);
+        Proposal memory prop = Proposal(0, 0, applicationHash, 0, msg.sender, 0, false);
         proposals.push(prop);
 
         emit NewVoterRequest(proposals.length - 1, msg.sender);
@@ -69,7 +82,7 @@ contract Ballot {
         return proposals.length - 1;
     }
 
-    function approveVoterProposal(uint proposalId) public validProposal(proposalId) returns(bool) {
+    function approveVoterProposal(uint proposalId) public validProposal(proposalId) ofPropType(proposalId, 0) returns(bool) {
         Proposal storage prop = proposals[proposalId];
         uint numVotes = prop.voteCount;
 
@@ -77,6 +90,7 @@ contract Ballot {
             Voter storage newVoter = voters[prop.beneficiary];
             newVoter.isVoter = true;
             numVoters++;
+
             prop.approved = true;
             emit NewVoterApproved(proposalId, prop.beneficiary);
         } else {
@@ -92,7 +106,7 @@ contract Ballot {
      * @param amount to transfer to beneficiary from pool
      */
     function addFundTransferProposal(bytes memory applicationHash, uint amount) public onlyVoter returns(uint) {
-        Proposal memory prop = Proposal(applicationHash, amount, msg.sender, 0, false);
+        Proposal memory prop = Proposal(1, 0, applicationHash, amount, msg.sender, 0, false);
         proposals.push(prop);
 
         emit FundTransferRequest(proposals.length - 1, msg.sender, amount);
@@ -101,13 +115,18 @@ contract Ballot {
         return proposals.length - 1;
     }
 
-    function approveFundTransferProposal(uint proposalId) public validProposal(proposalId) returns(bool) {
+    function approveFundTransferProposal(uint proposalId) public onlyVoter validProposal(proposalId) ofPropType(proposalId, 1) returns(bool) {
+        {
+            uint amount = proposals[proposalId].amount;
+            _beforeFundTransferApproved(amount);
+        }
+
         Proposal storage prop = proposals[proposalId];
         uint numVotes = prop.voteCount;
 
         if (numVotes >= numVoters / 2 + 1) {
             // SuperApp can crawl through proposalIdToFunds in view mode to find all non-paid and defaulters
-            proposalIdToFunds[proposalId] = FundsAlloted(prop.beneficiary, prop.amount, block.timestamp, false, false);
+            proposalIdToFunds[proposalId] = FundsAlloted(prop.beneficiary, prop.amount, 0, block.timestamp, false);
             prop.approved = true;
             emit FundTransferApproved(proposalId, prop.beneficiary, prop.amount, block.timestamp);
         } else {
@@ -116,6 +135,58 @@ contract Ballot {
 
         _afterFundTransferApproved();
         
+        return prop.approved;
+    }
+
+    function addRepayExtensionProposal(bytes memory applicationHash, uint proposalId) public onlyVoter validProposal(proposalId) returns(uint) {
+        proposals.push(Proposal(2, proposalId, applicationHash, 0, msg.sender, 0, false));
+
+        emit RepayExtensionRequest(proposalId);
+        
+        vote(proposals.length - 1);
+        return proposals.length - 1;
+    }
+
+    function approveRepayExtensionProposal(uint proposalId) public onlyVoter validProposal(proposalId) ofPropType(proposalId, 1) returns(bool) {
+        Proposal storage prop = proposals[proposalId];
+        uint numVotes = prop.voteCount;
+
+        if (numVotes >= numVoters / 2 + 1) {
+            FundsAlloted storage fundDescr = proposalIdToFunds[prop.priorProposalId];
+            fundDescr.blockTime = block.timestamp; // Actual logic
+
+            prop.approved = true;
+            emit RepayExtensionApproved(prop.priorProposalId, block.timestamp);
+        } else {
+            revert("Proposal has not acquirred enough votes");
+        }
+
+        return prop.approved;
+    }
+
+    function addLoanWaiverProposal(bytes memory applicationHash, uint proposalId) public onlyVoter validProposal(proposalId) ofPropType(proposalId, 1) returns(uint) {
+        proposals.push(Proposal(3, proposalId, applicationHash, 0, msg.sender, 0, false));
+
+        emit LoanWaiverRequest(proposalId);
+        
+        vote(proposals.length - 1);
+        return proposals.length - 1;
+    }
+
+    function approveLoanWaiverProposal(uint proposalId) public onlyVoter validProposal(proposalId) ofPropType(proposalId, 2) returns(bool) {
+        Proposal storage prop = proposals[proposalId];
+        uint numVotes = prop.voteCount;
+
+        if (numVotes >= numVoters / 2 + 1) {
+            FundsAlloted storage fundDescr = proposalIdToFunds[prop.priorProposalId];
+            fundDescr.paidBack = true; // Actual logic
+
+            prop.approved = true;
+            emit LoanWaiverApproved(prop.priorProposalId);
+        } else {
+            revert("Proposal has not acquirred enough votes");
+        }
+                
         return prop.approved;
     }
 
@@ -178,8 +249,9 @@ contract Ballot {
         }
     }
     
-    function _revokeVoteRight(address adx) private {
-        voters[adx].isVoter = false;
+    function _revokeVoteRight(address voter) private {
+        voters[voter].isVoter = false;
+        emit VoterRightRevoked(voter);
     }
 
     // function addressIsVoter(address adx) public view returns(bool) {
@@ -204,10 +276,17 @@ contract Ballot {
         _;
     }
 
+    modifier ofPropType(uint proposalId, uint8 _propType) {
+        require(proposals[proposalId].propType == _propType, "proposal is of different type");
+        _;
+    }
+
     // ***************************************************
     // HOOKS
     // ***************************************************
 
+    // Called in approveFundTransferRequest before core logic, can be used for reverts
+    function _beforeFundTransferApproved(uint amount) private {}
     // Called in approveFundTransferRequest after core logic, before return
     function _afterFundTransferApproved() private {}
 }
