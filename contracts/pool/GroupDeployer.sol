@@ -15,7 +15,7 @@ contract GroupDeployer {
     IConstantFlowAgreementV1 private cfa; // the stored constant flow agreement class address
     ISuperTokenFactory private superTokenFactory;
 
-    mapping(bytes32 => address) nameToApp;
+    mapping(bytes32 => address) public nameToApp;
 
     constructor(
         ISuperfluid _host,

@@ -11,6 +11,8 @@ import "@openzeppelin/contracts/token/ERC777/IERC777Recipient.sol";
  * see https://forum.openzeppelin.com/t/simple-erc777-token-example/746
  */
 contract Simple777Recipient is IERC777Recipient {
+    event MsgSenderAndToken(address, address);
+
     IERC1820Registry private _erc1820 =
         IERC1820Registry(0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24);
     bytes32 private constant TOKENS_RECIPIENT_INTERFACE_HASH =
@@ -38,10 +40,11 @@ contract Simple777Recipient is IERC777Recipient {
         bytes calldata,
         bytes calldata
     ) external view override {
-        require(
-            msg.sender == address(_token),
-            "Simple777Recipient: Invalid token"
-        );
+        // require(
+        //     msg.sender == address(_token),
+        //     "Simple777Recipient: In`valid token"
+        // );
+        // emit MsgSenderAndToken(msg.sender, address(_token));
 
         // do nothing
         // emit DoneStuff(operator, from, to, amount, userData, operatorData);
