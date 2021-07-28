@@ -25,6 +25,7 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
     uint16 public renounceFee = 400; // Arbitrary value set (_ _ _ _ _ => _ _ _._ _ %)
     uint16 public interestRate;
     uint public loanDuration;
+    bytes public infoHash;
 
     constructor(
         ISuperfluid _host,
@@ -33,7 +34,8 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
         int96 _acceptedRate,
         ISuperToken _poolToken,
         uint _loanDuration,
-        uint16 _interestRate
+        uint16 _interestRate,
+        bytes memory _infoHash
     ) Simple777Recipient(address(poolToken)) {
         assert(address(_host) != address(0));
         assert(address(_cfa) != address(0));
@@ -48,6 +50,7 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
         poolToken = _poolToken;
         loanDuration = _loanDuration;
         interestRate = _interestRate;
+        infoHash = _infoHash;
 
         uint256 configWord = SuperAppDefinitions.APP_LEVEL_FINAL |
             SuperAppDefinitions.BEFORE_AGREEMENT_CREATED_NOOP |
@@ -57,33 +60,50 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
         host.registerApp(configWord);
     }
 
-    function repayLoan(uint proposalId) public onlyVoter ofPropType(proposalId, 1) {
-        FundsAlloted storage fundDescr = proposalIdToFunds[proposalId];
-        uint allotTime = block.timestamp - fundDescr.blockTime;
-        uint amount = fundDescr.amount - fundDescr.amountRecievedBack;
-        uint amountToPay;
-        {
-            uint interest = (allotTime * interestRate) / ((365 days ) * 10000) * amount;
-            amountToPay = amount + interest;
-        }
-        acceptedToken.send(address(this), amountToPay, "");
+    function approveVoterProposal(uint proposalId) override public validProposal(proposalId) ofPropType(proposalId, 0) returns(bool) {
+        require(proposals[proposalId].beneficiary == msg.sender, "proposal beneficiary isn't msg.sender");
+        
+        // Create flow
+        //(bytes memory ctx, ) =
+         host.callAgreementWithContext(
+                    cfa,
+                    abi.encodeWithSelector(
+                        cfa.createFlow.selector,
+                        msg.sender,
+                        poolToken,
+                        -acceptedRate,
+                        new bytes(0) // placeholder
+                    ),
+                    "0x",
+                    bytes("")
+                );
 
-        fundDescr.amountRecievedBack += amount;
-        fundDescr.paidBack = true;
-
-        emit LoanRepaid(proposalId, fundDescr.beneficiary);
+        return super.approveVoterProposal(proposalId);
     }
 
-    function repayPartialLoan(uint proposalId, uint amountToPay) public onlyVoter ofPropType(proposalId, 1) {
+    function repayLoan(uint proposalId, uint amountToPay) public onlyVoter ofPropType(proposalId, 1) {
+        // If amountToPay is 0 then remaining amount has to be paid
         FundsAlloted storage fundDescr = proposalIdToFunds[proposalId];
         uint allotTime = block.timestamp - fundDescr.blockTime;
-        
-        // TODO check this!!!
-        uint amount = (amountToPay * (365 days) * 10000) / ((10000 * (365 days)) + (interestRate * interestRate));
+
+        uint amount;
+        if (amountToPay == 0)
+        {
+            amount = fundDescr.amount - fundDescr.amountRecievedBack;
+            uint interest = (allotTime * interestRate) / ((365 days ) * 10000) * amount;
+            amountToPay = amount + interest;
+        } else {
+            amount = (amountToPay * (365 days) * 10000) / ((10000 * (365 days)) + (allotTime * interestRate));
+        }
 
         acceptedToken.send(address(this), amountToPay, "");
 
         fundDescr.amountRecievedBack += amount;
+
+        if (fundDescr.amountRecievedBack >= fundDescr.amount)
+            fundDescr.paidBack = true;
+
+        emit LoanRepaid(proposalId, fundDescr.beneficiary);
     }
 
     function renounceOwnership() public onlyVoter {
@@ -92,7 +112,9 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
 
         uint amountToSend = (senderBalance * (10000 - renounceFee)) / 10000;
         require(getPoolBalance() > amountToSend, "Pool's balance is not enough currently");
+
         acceptedToken.send(msg.sender, amountToSend, "");
+        voters[msg.sender].isVoter = false;
     }
 
     function _updateOutflow(
@@ -161,7 +183,6 @@ contract PoolMachine is Simple777Recipient, SuperAppBase, Ballot {
                     "0x",
                     newCtx
                 );
-                voters[donor].isVoter = true;
             }
         }
     }

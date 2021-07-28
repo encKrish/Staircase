@@ -6,9 +6,9 @@ pragma solidity >=0.7.0 <0.9.0;
  * @dev Implements voting process along with vote delegation
  */
 contract Ballot {
+    // Maybe add the blacklist function
     event NewVoterRequest(uint proposalId, address beneficiary);
     event NewVoterApproved(uint proposalId, address beneficiary);
-    event VoterRightRevoked(address voter);
     event FundTransferRequest(uint proposalId, address beneficiary, uint amount);
     event FundTransferApproved(uint proposalId, address beneficiary, uint amount, uint blockTime);
     event RepayExtensionRequest(uint proposalId);
@@ -52,7 +52,6 @@ contract Ballot {
         bool paidBack; // If amount has been paid back
     }
 
-    address public chairperson; // Creator of the ballot
     // Map address to proposalId to ProposalInfo for the voter
     mapping(address => Voter) public voters;
     uint public numVoters;
@@ -62,9 +61,7 @@ contract Ballot {
     mapping(uint => FundsAlloted) public proposalIdToFunds;
 
     constructor() {
-        chairperson = msg.sender;
-        Voter storage cp = voters[chairperson];
-        cp.isVoter = true;
+        voters[msg.sender].isVoter = true;
         numVoters++;
     }
     
@@ -82,7 +79,7 @@ contract Ballot {
         return proposals.length - 1;
     }
 
-    function approveVoterProposal(uint proposalId) public validProposal(proposalId) ofPropType(proposalId, 0) returns(bool) {
+    function approveVoterProposal(uint proposalId) virtual public validProposal(proposalId) ofPropType(proposalId, 0) returns(bool)  {
         Proposal storage prop = proposals[proposalId];
         uint numVotes = prop.voteCount;
 
@@ -251,7 +248,6 @@ contract Ballot {
     
     function _revokeVoteRight(address voter) private {
         voters[voter].isVoter = false;
-        emit VoterRightRevoked(voter);
     }
 
     // function addressIsVoter(address adx) public view returns(bool) {
