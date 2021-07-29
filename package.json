@@ -18,6 +18,5 @@
     "@superfluid-finance/ethereum-contracts": "^1.0.0-rc.5",
     "@truffle/hdwallet-provider": "^1.4.2",
     "truffle-contract-size": "^2.0.1"
-  },
-  "devDependencies": {}
+  }
 }

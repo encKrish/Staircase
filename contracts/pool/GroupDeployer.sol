@@ -37,6 +37,7 @@ contract GroupDeployer {
         uint16 _interestRate,
         bytes memory _infoHash
     ) public {
+        require(nameToApp[groupName] == address(0x0), "group name already taken");
         (address poolMachine, INativeSuperToken poolToken) = step1_deploy(_acceptedToken, _acceptedRate, _loanDuration, _interestRate, _infoHash);
         step2_initProxy(poolToken);
         step3_initToken(poolMachine, poolToken, token_name, token_symbol);
